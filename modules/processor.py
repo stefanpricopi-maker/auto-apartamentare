@@ -36,7 +36,10 @@ def process_dxf_bytes(
     *,
     config: ProcessorConfig = ProcessorConfig(),
 ) -> list[ApartmentResult]:
-    doc = ezdxf.read(io.BytesIO(dxf_bytes))
+    # ezdxf expects a text stream for ASCII DXF (most common case).
+    # We accept bytes from upload and decode via a TextIO wrapper.
+    text_stream = io.TextIOWrapper(io.BytesIO(dxf_bytes), encoding="utf-8", errors="replace")
+    doc = ezdxf.read(text_stream)
     msp = doc.modelspace()
 
     contours = _collect_apartment_contours(msp, config.reference_layer)
@@ -62,9 +65,9 @@ def process_dxf_bytes(
         )
 
         apt_doc = _build_apartment_doc(doc, included)
-        out = io.BytesIO()
-        apt_doc.write(out)
-        out_bytes = out.getvalue()
+        out_text = io.StringIO()
+        apt_doc.write(out_text)
+        out_bytes = out_text.getvalue().encode("utf-8")
 
         areas_df = _extract_areas_table(msp, polygon, apartment_name=apt_name)
 
