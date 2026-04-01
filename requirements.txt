@@ -1,0 +1,5 @@
+ezdxf
+streamlit
+shapely
+pandas
+openpyxl
