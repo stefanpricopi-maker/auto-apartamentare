@@ -49,6 +49,7 @@ def test_common_wall_on_shared_boundary_included_in_both_apartments():
 
     results = process_dxf_bytes(_doc_to_bytes(doc), config=ProcessorConfig(reference_layer="CONTUR_APARTAMENT", eps=0.0))
     assert len(results) == 2
+    assert all(r.entity_count >= 1 for r in results)
 
     # Parse each resulting DXF and check entity counts by location.
     docs = [

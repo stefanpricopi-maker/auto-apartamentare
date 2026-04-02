@@ -1,146 +1,73 @@
-import re
 import streamlit as st
+import pandas as pd
 import ezdxf
 import io
+import matplotlib.pyplot as plt
+from modules.processor import ProcessorConfig, process_dxf_bytes
 
-DEFAULT_CONTOUR_LAYER = "CONTUR_APARTAMENT"
+st.set_page_config(page_title="AutoApartamentare Pro", layout="wide")
 
-# Cuvântul „Pen” izolat (evită false positive: „pentru”, „open”, etc.)
-_PEN_AS_WORD = re.compile(r"\bpen\b", re.IGNORECASE)
+st.title("🏙️ AutoApartamentare - FAZA 5")
+st.caption("Detecție Balcoane + Raport de Cadastru")
 
+uploaded = st.file_uploader("Încarcă fișierul DXF", type=["dxf"])
 
-def filter_clean_layer_names(names: list[str]) -> list[str]:
-    """
-    Elimină layerele de plot/sistem: subșir 'hidden' (case-insensitive) sau
-    cuvântul întreg 'pen' (word boundary). Rămân layerele „curate” pentru selecție.
-    """
-    out: list[str] = []
-    for n in names:
-        if not n:
-            continue
-        low = n.casefold()
-        if "hidden" in low or _PEN_AS_WORD.search(n):
-            continue
-        out.append(n)
-    return out
+if uploaded:
+    col_cfg1, col_cfg2 = st.columns(2)
+    
+    with col_cfg1:
+        try:
+            raw_bytes = uploaded.getvalue()
+            doc = ezdxf.read(io.TextIOWrapper(io.BytesIO(raw_bytes), encoding="utf-8", errors="replace"))
+            layers = sorted([l.dxf.name for l in doc.layers])
+            sel_layer = st.selectbox("Layer Contur", layers, index=layers.index("CONTUR_APARTAMENT") if "CONTUR_APARTAMENT" in layers else 0)
+        except:
+            sel_layer = "CONTUR_APARTAMENT"
+            
+    with col_cfg2:
+        unit_type = st.radio("Unități desen", ["Metri (m)", "Milimetri (mm)"], horizontal=True)
+        unit_key = "m" if "Metri" in unit_type else "mm"
 
+    if st.button("🚀 PROCESEAZĂ ȘI CALCULEAZĂ"):
+        cfg = ProcessorConfig(reference_layer=sel_layer, units=unit_key)
+        results = process_dxf_bytes(raw_bytes, cfg)
+        
+        if results:
+            # 1. TABELUL DETALIAT (PENTRU EXCEL)
+            all_dfs = [r.areas_df for r in results if not r.areas_df.empty]
+            if all_dfs:
+                final_df = pd.concat(all_dfs, ignore_index=True)
+                st.subheader("📋 Detaliu pe Încăperi")
+                st.dataframe(final_df, use_container_width=True, hide_index=True)
+                
+                csv = final_df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button("📥 DESCARCĂ EXCEL DETALIAT", csv, "Raport_Detaliat.csv", "text/csv")
+            
+            st.divider()
 
-def sort_layers_for_selectbox(names: list[str]) -> list[str]:
-    """
-    Alfabetic în interiorul fiecărei grupe; layerele de sistem tip Hidden sau care
-    încep cu '-' merg la sfârșit (layerele utilizatorului rămân sus).
-    """
-    primary: list[str] = []
-    deprioritized: list[str] = []
-    for n in names:
-        if not n:
-            continue
-        low = n.lower()
-        if n.startswith("-") or low.startswith("hidden"):
-            deprioritized.append(n)
-        else:
-            primary.append(n)
-    primary.sort(key=str.casefold)
-    deprioritized.sort(key=str.casefold)
-    return primary + deprioritized
-
-
-st.set_page_config(page_title="AutoApartamentare", layout="centered")
-
-st.markdown(
-    """
-<style>
-div[data-testid="stVerticalBlock"] h2 {
-  margin-bottom: 0.5rem;
-}
-.aa-center {
-  display: flex;
-  justify-content: center;
-  margin-top: 0.75rem;
-}
-.aa-center div[data-testid="stButton"] > button {
-  background: #e53935 !important;
-  border: 1px solid #e53935 !important;
-  color: white !important;
-  padding: 0.6rem 1.2rem !important;
-  border-radius: 0.6rem !important;
-}
-.aa-center div[data-testid="stButton"] > button:hover {
-  background: #d32f2f !important;
-  border-color: #d32f2f !important;
-}
-.aa-center div[data-testid="stButton"] > button:focus {
-  box-shadow: 0 0 0 0.2rem rgba(229, 57, 53, 0.25) !important;
-}
-</style>
-<h2>AutoApartamentare - Cadastru Helper</h2>
-""",
-    unsafe_allow_html=True,
-)
-
-uploaded = st.file_uploader("Încarcă fișierul .dxf", type=["dxf"])
-
-reference_layer = DEFAULT_CONTOUR_LAYER
-layers: list[str] = []
-layer_read_error = False
-doc = None
-
-if uploaded is not None:
-    try:
-        # ezdxf expects a text stream for common ASCII DXF files
-        text_stream = io.TextIOWrapper(io.BytesIO(uploaded.getvalue()), encoding="utf-8", errors="replace")
-        doc = ezdxf.read(text_stream)
-        raw = {layer.dxf.name for layer in doc.layers if getattr(layer.dxf, "name", None)}
-        layers = sort_layers_for_selectbox(filter_clean_layer_names(list(raw)))
-    except Exception as e:
-        layer_read_error = True
-        st.error("Hopa! Fișierul pare să aibă probleme. Sigur este un DXF valid?")
-        st.caption(f"Detalii tehnice: {e}")
-
-if doc is not None and not layer_read_error:
-    try:
-        # DXF version: translate "AC10xx" to human-friendly AutoCAD release when possible
-        from ezdxf.lldxf.const import acad_release
-
-        dxf_ver = getattr(doc, "dxfversion", "") or ""
-        release = acad_release.get(dxf_ver, dxf_ver or "necunoscut")
-        version_label = release if release.lower().startswith("autocad") else f"AutoCAD {release}"
-
-        total_entities = sum(len(layout) for layout in doc.layouts)
-        st.caption(f"**Versiune DXF**: {version_label} · **Entități totale**: {total_entities}")
-    except Exception:
-        # Don't block the UI if stats fail
-        pass
-
-if layers:
-    default_idx = (
-        layers.index(DEFAULT_CONTOUR_LAYER)
-        if DEFAULT_CONTOUR_LAYER in layers
-        else 0
-    )
-    reference_layer = st.selectbox(
-        "Layer contur (alege din fișier)",
-        options=layers,
-        index=default_idx,
-    )
-else:
-    reference_layer = st.text_input(
-        "Layer contur (default)",
-        value=DEFAULT_CONTOUR_LAYER,
-    )
-
-st.markdown('<div class="aa-center">', unsafe_allow_html=True)
-run = st.button("Procesează")
-st.markdown("</div>", unsafe_allow_html=True)
-
-if run:
-    if uploaded is None:
-        st.warning("Te rog încarcă un fișier .dxf.")
-    elif layer_read_error:
-        st.warning("Nu pot procesa acest fișier până nu este un DXF valid.")
-    else:
-        st.info(
-            f"Fișier încărcat: **{uploaded.name}**. "
-            f"Layer contur: **{reference_layer or DEFAULT_CONTOUR_LAYER}**."
-        )
-
+            # 2. CENTRALIZATOR (RAPORTUL DE CADASTRU)
+            col1, col2 = st.columns([6, 4])
+            
+            with col1:
+                st.subheader("🏠 Centralizator Apartamente")
+                summary_data = []
+                for r in results:
+                    summary_data.append({
+                        "Nr. Unitate": r.name,
+                        "S. Utilă (mp)": r.net_area,
+                        "S. Balcoane (mp)": r.balcony_area,
+                        "S. Totală (mp)": r.total_area,
+                        "S. Geometrie (mp)": f"{r.area_calc:.2f}"
+                    })
+                st.table(summary_data)
+                
+            with col2:
+                st.subheader("🖼️ Identificare Plan")
+                fig, ax = plt.subplots(figsize=(8, 8))
+                for r in results:
+                    x, y = r.polygon.exterior.xy
+                    ax.plot(x, y, linewidth=2)
+                    ax.text(r.polygon.centroid.x, r.polygon.centroid.y, r.name, ha='center', fontsize=8, fontweight='bold', bbox=dict(facecolor='white', alpha=0.5))
+                ax.set_aspect('equal')
+                ax.set_axis_off()
+                st.pyplot(fig)

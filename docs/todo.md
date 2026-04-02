@@ -8,17 +8,17 @@
 [x] Interfața de bază: Crearea fișierului app.py cu zona de upload și input pentru layer-ul de contur.
 
 🟡 Faza 2: "Creierul" Geometriei (Core Logic)
-[ ] Identificare Contururi: Funcție care scanează fișierul DXF și găsește toate poliliniile închise de pe layer-ul CONTUR_APARTAMENT.
+[x] Identificare Contururi: Funcție care scanează fișierul DXF și găsește toate poliliniile închise de pe layer-ul CONTUR_APARTAMENT.
 
-[ ] Integrare Shapely: Conversia poliliniilor DXF în poligoane Shapely pentru calcule matematice.
+[x] Integrare Shapely: Conversia poliliniilor DXF în poligoane Shapely pentru calcule matematice.
 
-[ ] Algoritmul de Selecție (Criteriul Spațial):
+[x] Algoritmul de Selecție (Criteriul Spațial):
 
-[ ] Implementarea regulii: Elementul este în interior?
+[x] Implementarea regulii: Elementul este în interior?
 
-[ ] Implementarea regulii: Elementul intersectează conturul? (pentru pereții comuni).
+[x] Implementarea regulii: Elementul intersectează conturul? (pentru pereții comuni).
 
-[ ] Filtrare Layer-e: Logică de ignorare a elementelor de mobilier sau a altor layere nedorite.
+[x] Filtrare Layer-e: Logică de ignorare a elementelor de mobilier sau a altor layere nedorite.
 
 🔵 Faza 3: Extracția de Date și Excel
 [ ] Căutare Text: Identificarea entităților de tip TEXT sau MTEXT din interiorul fiecărui apartament.
