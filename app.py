@@ -7,10 +7,12 @@ from modules.processor import ProcessorConfig, process_dxf_bytes, draw_all_layer
 
 st.set_page_config(page_title="AutoApartamentare Pro", layout="centered")
 
+# CSS pentru un design compact și butoane profesionale
 st.markdown("""
     <style>
-    .block-container { max-width: 1000px; padding-top: 2rem; }
-    .stButton>button { width: 100%; border-radius: 8px; height: 3em; background-color: #f63366; color: white; font-weight: bold; }
+    .block-container { max-width: 1050px; padding-top: 1.5rem; }
+    .stButton>button { width: 100%; border-radius: 8px; height: 3.5em; background-color: #f63366; color: white; font-weight: bold; }
+    div[data-testid="stExpander"] { border: none; box-shadow: none; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -20,38 +22,58 @@ uploaded = st.file_uploader("Încarcă fișierul DXF", type=["dxf"])
 
 if uploaded:
     raw_bytes = uploaded.getvalue()
-    col_input, col_preview = st.columns([1, 1.8])
+    col_input, col_preview = st.columns([1, 2])
     
     with col_input:
         st.subheader("⚙️ Configurare")
+        
+        # Filtru manual adăugat de utilizator
+        custom_ignore = st.text_input("Ignoră layere (ex: AXE, MOBILA)", value="AXE, COTE, MOBILA")
+        ignore_list = [x.strip().upper() for x in custom_ignore.split(",") if x.strip()]
+        base_ignore = ["HIDDEN", "PEN_NO", "EVACUARE", "GOLURI", "PLANSEE", "INTERACSI"]
+        final_ignore = base_ignore + ignore_list
+
         try:
             text_stream = io.TextIOWrapper(io.BytesIO(raw_bytes), encoding="utf-8", errors="replace")
             doc = ezdxf.read(text_stream)
+            msp = doc.modelspace()
             
-            # FILTRARE STRICTĂ ȘI SORTARE ALFABETICĂ
+            # --- FILTRARE ȘI IDENTIFICARE SMART ---
             all_layers = [l.dxf.name for l in doc.layers]
-            clean_layers = sorted([
-                n for n in all_layers 
-                if "HIDDEN" not in n.upper() and not n.startswith(("-", "*", "$"))
-            ])
             
-            if not clean_layers: clean_layers = sorted(all_layers)
-            
-            default_layer = "CONTUR_APARTAMENT"
-            idx = clean_layers.index(default_layer) if default_layer in clean_layers else 0
-            selected_layer = st.selectbox("Alege Layer Contur", options=clean_layers, index=idx)
-            
-        except:
-            selected_layer = "CONTUR_APARTAMENT"
+            # Găsim care layere au poligoane închise
+            useful_layers = set()
+            for lname in all_layers:
+                if msp.query(f'LWPOLYLINE[layer=="{lname}"]'):
+                    useful_layers.add(lname)
 
-        unit_type = st.radio("Unități desen AutoCAD", ["Metri (m)", "Milimetri (mm)"], horizontal=True)
+            # Construim lista filtrată și sortată
+            processed_options = []
+            for n in all_layers:
+                if not any(k in n.upper() for k in final_ignore) and not n.startswith(("-", "*", "$")):
+                    label = f"🏠 {n}" if n in useful_layers else n
+                    processed_options.append((n, label))
+            
+            processed_options.sort(key=lambda x: x[0]) # Sortare Alfabetică
+            
+            # Mapare pentru selectbox
+            opt_map = {label: name for name, label in processed_options}
+            
+            selected_label = st.selectbox("Alege Layer Contur", options=list(opt_map.keys()), index=0)
+            selected_layer = opt_map[selected_label]
+            
+        except Exception as e:
+            st.error(f"Eroare citire: {e}")
+            selected_layer = "0"
+
+        unit_type = st.radio("Unități desen", ["Metri (m)", "Milimetri (mm)"], horizontal=True)
         unit_key = "m" if "Metri" in unit_type else "mm"
         do_process = st.button("🚀 PROCESEAZĂ")
 
     with col_preview:
-        # Am scos titlul redundant de aici, rămâne doar cel din grafic
+        # Previzualizare Plotly fără titlu redundant
         fig_interact = draw_all_layers_interactive(raw_bytes)
-        st.plotly_chart(fig_interact, use_container_width=True, config={'displayModeBar': True})
+        st.plotly_chart(fig_interact, use_container_width=True)
 
     if do_process:
         cfg = ProcessorConfig(reference_layer=selected_layer, units=unit_key)
@@ -68,13 +90,13 @@ if uploaded:
                 st.download_button("📥 DESCARCĂ EXCEL", csv, "Raport.csv", "text/csv")
             
             st.divider()
-            col_res1, col_res2 = st.columns([1, 1])
+            col_res1, col_res2 = st.columns([1, 1.2])
             with col_res1:
                 st.subheader("🏠 Centralizator")
-                summary = [{"Unitate": r.name, "S. Utilă": r.net_area, "S. Balc.": r.balcony_area, "Total": r.total_area} for r in results]
+                summary = [{"Unitate": r.name, "Total": r.total_area, "Utilă": r.net_area, "Balcon": r.balcony_area} for r in results]
                 st.table(summary)
             with col_res2:
-                st.subheader("🖼️ Schiță")
+                st.subheader("🖼️ Schiță Geometrie")
                 fig, ax = plt.subplots()
                 for r in results:
                     x, y = r.polygon.exterior.xy
@@ -82,3 +104,5 @@ if uploaded:
                     ax.text(r.polygon.centroid.x, r.polygon.centroid.y, r.name, ha='center', fontsize=8, fontweight='bold')
                 ax.set_aspect('equal'); ax.set_axis_off()
                 st.pyplot(fig)
+else:
+    st.info("Încarcă un fișier DXF pentru a începe.")

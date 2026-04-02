@@ -24,7 +24,7 @@ class ProcessorConfig:
         self.scale = 1000.0 if units == "mm" else 1.0
 
 def _entity_text_value(e) -> str:
-    # Metoda 'plain_text' de la ezdxf este sfântă pentru MTEXT
+    # Extracție text curat (fără tag-uri de font/formatare ArchiCAD)
     if e.dxftype() == "MTEXT":
         raw = e.plain_text()
     else:
@@ -32,9 +32,8 @@ def _entity_text_value(e) -> str:
     
     if not raw: return ""
     
-    # Curățare suplimentară pentru caractere speciale ArchiCAD
+    # Eliminăm resturile de formatare și caractere speciale
     clean = re.sub(r"\\P|\\{.*?\\}|\\{.*|\\}|;", " ", raw)
-    
     replacements = {"\\U+0102": "Ă", "\\U+0103": "ă", "\\U+00CE": "Î", "\\U+00EE": "î",
                     "\\U+0218": "Ș", "\\U+0219": "ș", "\\U+021A": "Ț", "\\U+021B": "ț",
                     "\\U+00C2": "Â", "\\U+00E2": "â"}
@@ -49,23 +48,25 @@ def draw_all_layers_interactive(dxf_data: bytes):
     msp = doc.modelspace()
     fig = go.Figure()
     
+    # Desenăm liniile (toate layerele)
     for p in msp.query('LWPOLYLINE'):
         try:
             pts = [(v[0], v[1]) for v in p.get_points()]
             if pts:
                 x, y = zip(*pts)
                 if p.is_closed: x, y = x + (x[0],), y + (y[0],)
-                fig.add_trace(go.Scatter(x=x, y=y, mode='lines', line=dict(color='#444', width=1), 
+                fig.add_trace(go.Scatter(x=x, y=y, mode='lines', line=dict(color='#888', width=0.5), 
                                          hoverinfo='none', showlegend=False))
         except: continue
         
+    # Desenăm textele (curățate)
     for e in msp.query('TEXT MTEXT'):
         try:
             txt = _entity_text_value(e)
-            if txt and len(txt) > 1 and "Arial" not in txt: # Filtru anti-font tags
+            if txt and len(txt) > 1:
                 p = e.dxf.insert
                 fig.add_trace(go.Scatter(x=[p.x], y=[p.y], mode='text', 
-                                         text=[txt], textfont=dict(size=10, color="blue"),
+                                         text=[txt], textfont=dict(size=9, color="#444"),
                                          hoverinfo='text', showlegend=False))
         except: continue
         
@@ -74,7 +75,8 @@ def draw_all_layers_interactive(dxf_data: bytes):
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, scaleanchor="x", scaleratio=1),
         margin=dict(l=0, r=0, t=0, b=0),
-        hovermode='closest'
+        hovermode='closest',
+        dragmode='pan'
     )
     return fig
 
@@ -94,7 +96,7 @@ def process_dxf_bytes(dxf_data: bytes, config: ProcessorConfig) -> List[Apartmen
     
     if not apartments_data: return []
 
-    blacklist = {"GRESIE", "PARCHET", "ANTID", "LAMINAT", "BETON", "VOPSEA", "CIMENT", "CERAMIC"}
+    blacklist = {"GRESIE", "PARCHET", "ANTID", "LAMINAT", "BETON", "VOPSEA", "CIMENT", "CERAMIC", "LIMITA", "GOL", "PLACA"}
     balcony_keywords = {"BALCON", "LOGIE", "TERASA", "BALC", "LOG"}
 
     all_labels = []
