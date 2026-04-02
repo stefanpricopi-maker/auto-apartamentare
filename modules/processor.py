@@ -115,7 +115,7 @@ def process_dxf_bytes(dxf_data: bytes, config: ProcessorConfig) -> List[Apartmen
     doc = ezdxf.read(stream)
     msp = doc.modelspace()
     
-    # Găsim contururile
+    # Găsim contururile pe layer-ul specificat
     apts_raw = []
     for p in msp.query(f'LWPOLYLINE[layer=="{config.reference_layer}"]'):
         if p.is_closed and len(p) >= 3:
@@ -129,9 +129,9 @@ def process_dxf_bytes(dxf_data: bytes, config: ProcessorConfig) -> List[Apartmen
     blacklist = {"GRESIE", "PARCHET", "ANTID", "LAMINAT", "BETON", "VOPSEA", "CIMENT", "CERAMIC", "LIMITA", "GOL", "PLACA", "H=", "HB="}
     balcony_keywords = {"BALCON", "LOGIE", "TERASA", "BALC", "LOG"}
     area_pat = re.compile(r"(\d+[.,]\d+)")
-    search_buffer = 0.2 * config.scale # Buffer mic pentru precizie
+    search_buffer = 0.2 * config.scale 
 
-    # Colectăm textele global (scanând și blocurile)
+    # Colectăm textele global
     all_labels_raw = []
     for e in msp:
         items = [e]
