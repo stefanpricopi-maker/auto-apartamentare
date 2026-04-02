@@ -57,14 +57,14 @@ def _entity_text_value(e) -> str:
     return clean.strip()
 
 def draw_all_layers_interactive(dxf_data: bytes):
-    """Generează previzualizarea Plotly pentru interfață."""
+    """Generează previzualizarea Plotly folosind 'virtual_entities' pentru a vedea în interiorul blocurilor."""
     import io
     stream = io.TextIOWrapper(io.BytesIO(dxf_data), encoding="utf-8", errors="replace")
     doc = ezdxf.read(stream)
     msp = doc.modelspace()
     fig = go.Figure()
     
-    # Desenăm liniile (toate layerele) cu gri deschis
+    # 1. Desenăm liniile (un gri mediu pentru claritate)
     for p in msp.query('LWPOLYLINE'):
         try:
             pts = [(v[0], v[1]) for v in p.get_points()]
@@ -72,9 +72,40 @@ def draw_all_layers_interactive(dxf_data: bytes):
                 x, y = zip(*pts)
                 if p.is_closed: x, y = x + (x[0],), y + (y[0],)
                 fig.add_trace(go.Scatter(x=x, y=y, mode='lines', 
-                                         line=dict(color='#cccccc', width=0.5), 
+                                         line=dict(color='#A0A0A0', width=0.8), 
                                          hoverinfo='none', showlegend=False))
         except: continue
+        
+    # 2. Extragem textele (Metoda 'Deep Scan')
+    for e in msp:
+        # Creăm o listă cu entități de verificat (entitatea însăși + ce e în interiorul ei dacă e bloc)
+        check_list = [e]
+        
+        if e.dxftype() == "INSERT":
+            try:
+                # 'Explodăm' virtual blocul pentru a-i vedea conținutul (linii, texte interne)
+                check_list.extend(list(e.virtual_entities()))
+            except: pass
+
+        for item in check_list:
+            if item.dxftype() in ("TEXT", "MTEXT", "ATTRIB"):
+                try:
+                    txt = _entity_text_value(item)
+                    # Filtru anti-zgomot: ignorăm texte goale sau tag-uri de font
+                    if txt and len(txt) > 1 and "Arial" not in txt:
+                        # Folosim poziția transformată (globală) a textului
+                        pos = item.dxf.insert
+                        fig.add_trace(go.Scatter(
+                            x=[pos.x], y=[pos.y], 
+                            mode='markers+text', 
+                            text=[txt], 
+                            textposition="top center",
+                            textfont=dict(size=11, color="#000000"), # Negru pur pentru contrast maxim
+                            marker=dict(size=2, color="rgba(0,0,0,0)"), # Marker invizibil
+                            hoverinfo='text', 
+                            showlegend=False
+                        ))
+                except: continue
         
     fig.update_layout(
         plot_bgcolor="white",
