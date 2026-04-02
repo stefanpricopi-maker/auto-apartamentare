@@ -4,6 +4,9 @@ import re
 from typing import List
 from dataclasses import dataclass
 from shapely.geometry import Polygon, Point
+import plotly.graph_objects as go
+
+# --- DEFINIRE STRUCTURI DATE ---
 
 @dataclass
 class RoomLabel:
@@ -21,16 +24,78 @@ class ApartmentResult:
     balcony_area: float  
     total_area: float    
     areas_df: pd.DataFrame
-    all_room_labels: List[RoomLabel] # Păstrăm textele pentru desen
+    all_room_labels: List[RoomLabel]
 
-# ... (funcțiile _entity_text_value și draw_all_layers_interactive rămân la fel ca anterior) ...
+class ProcessorConfig:
+    def __init__(self, reference_layer: str, units: str = "m", eps: float = 1e-6):
+        self.reference_layer = reference_layer
+        self.units = units
+        self.scale = 1000.0 if units == "mm" else 1.0
+
+# --- FUNCȚII AUXILIARE ---
+
+def _entity_text_value(e) -> str:
+    """Extrage text curat din entități DXF (TEXT sau MTEXT)."""
+    if e.dxftype() == "MTEXT":
+        raw = e.plain_text()
+    else:
+        raw = getattr(e.dxf, "text", "")
+    
+    if not raw: return ""
+    
+    # Eliminare coduri de formatare ArchiCAD/AutoCAD
+    clean = re.sub(r"\\P|\\{.*?\\}|\\{.*|\\}|;", " ", raw)
+    
+    # Mapare caractere românești codate
+    replacements = {
+        "\\U+0102": "Ă", "\\U+0103": "ă", "\\U+00CE": "Î", "\\U+00EE": "î",
+        "\\U+0218": "Ș", "\\U+0219": "ș", "\\U+021A": "Ț", "\\U+021B": "ț",
+        "\\U+00C2": "Â", "\\U+00E2": "â"
+    }
+    for code, char in replacements.items():
+        clean = clean.replace(code, char)
+    return clean.strip()
+
+def draw_all_layers_interactive(dxf_data: bytes):
+    """Generează previzualizarea Plotly pentru interfață."""
+    import io
+    stream = io.TextIOWrapper(io.BytesIO(dxf_data), encoding="utf-8", errors="replace")
+    doc = ezdxf.read(stream)
+    msp = doc.modelspace()
+    fig = go.Figure()
+    
+    # Desenăm liniile (toate layerele) cu gri deschis
+    for p in msp.query('LWPOLYLINE'):
+        try:
+            pts = [(v[0], v[1]) for v in p.get_points()]
+            if pts:
+                x, y = zip(*pts)
+                if p.is_closed: x, y = x + (x[0],), y + (y[0],)
+                fig.add_trace(go.Scatter(x=x, y=y, mode='lines', 
+                                         line=dict(color='#cccccc', width=0.5), 
+                                         hoverinfo='none', showlegend=False))
+        except: continue
+        
+    fig.update_layout(
+        plot_bgcolor="white",
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, scaleanchor="x", scaleratio=1),
+        margin=dict(l=0, r=0, t=0, b=0),
+        hovermode='closest',
+        dragmode='pan'
+    )
+    return fig
+
+# --- LOGICA PRINCIPALĂ ---
 
 def process_dxf_bytes(dxf_data: bytes, config: ProcessorConfig) -> List[ApartmentResult]:
+    """Procesează DXF-ul și returnează datele de apartamentare."""
     import io
     stream = io.TextIOWrapper(io.BytesIO(dxf_data), encoding="utf-8", errors="replace")
     doc = ezdxf.read(stream)
     msp = doc.modelspace()
     
+    # 1. Extragem poligoanele de contur
     apartments_data = []
     for p in msp.query(f'LWPOLYLINE[layer=="{config.reference_layer}"]'):
         if p.is_closed and len(p) >= 3:
@@ -41,11 +106,15 @@ def process_dxf_bytes(dxf_data: bytes, config: ProcessorConfig) -> List[Apartmen
     
     if not apartments_data: return []
 
+    # Liste de cuvinte cheie pentru filtrare
     blacklist = {"GRESIE", "PARCHET", "ANTID", "LAMINAT", "BETON", "VOPSEA", "CIMENT", "CERAMIC", "LIMITA", "GOL", "PLACA", "H=", "HB="}
     balcony_keywords = {"BALCON", "LOGIE", "TERASA", "BALC", "LOG"}
     area_pat = re.compile(r"(\d+[.,]\d+)")
+    
+    # Buffer de căutare (0.2m) pentru a nu fura de la vecini
     search_buffer = 0.2 * config.scale 
 
+    # 2. Colectăm toate textele din desen
     all_labels_raw = []
     for e in msp:
         entities = [e]
@@ -59,18 +128,20 @@ def process_dxf_bytes(dxf_data: bytes, config: ProcessorConfig) -> List[Apartmen
                 if len(val) < 2 or any(w in val.upper() for w in blacklist): continue
                 all_labels_raw.append({"val": val, "pt": Point(sub_e.dxf.insert.x, sub_e.dxf.insert.y)})
 
+    # 3. Asociem textele cu fiecare poligon
     final_results = []
     for apt in apartments_data:
         rows, labels_to_draw, real_name, current_room = [], [], apt["temp_name"], "Încăpere"
         
-        # Pas 1: Nume Apartament
+        # Pas A: Nume Apartament (AP. X)
         for lbl in all_labels_raw:
             if apt["poly"].contains(lbl["pt"]) or apt["poly"].distance(lbl["pt"]) < search_buffer:
                 if "AP." in lbl["val"].upper() or "APT." in lbl["val"].upper():
+                    # Curățăm numele (ex: AP. 1 S=52.2mp devine doar AP. 1)
                     real_name = lbl["val"].split("S=")[0].split("s=")[0].strip()
                     labels_to_draw.append(RoomLabel(lbl["val"], lbl["pt"], False))
 
-        # Pas 2: Camere și Suprafețe
+        # Pas B: Camere și Suprafețe
         sum_net, sum_balcony = 0.0, 0.0
         for lbl in all_labels_raw:
             if apt["poly"].contains(lbl["pt"]) or apt["poly"].distance(lbl["pt"]) < search_buffer:
@@ -83,7 +154,12 @@ def process_dxf_bytes(dxf_data: bytes, config: ProcessorConfig) -> List[Apartmen
                         val = round(float(match.group(1).replace(",", ".")), 2)
                         if 1.0 <= val <= 250.0:
                             is_balcony = any(k in current_room.upper() for k in balcony_keywords)
-                            rows.append({"Nr. Apartament": real_name, "Denumire": current_room, "Suprafață (mp)": val, "Tip": "Balcon" if is_balcony else "Utilă"})
+                            rows.append({
+                                "Nr. Apartament": real_name, 
+                                "Denumire": current_room, 
+                                "Suprafață (mp)": val, 
+                                "Tip": "Balcon" if is_balcony else "Utilă"
+                            })
                             if is_balcony: sum_balcony += val
                             else: sum_net += val
                             labels_to_draw.append(RoomLabel(txt, lbl["pt"], True))
@@ -95,8 +171,14 @@ def process_dxf_bytes(dxf_data: bytes, config: ProcessorConfig) -> List[Apartmen
                         labels_to_draw.append(RoomLabel(txt, lbl["pt"], False))
 
         final_results.append(ApartmentResult(
-            index=0, name=real_name, polygon=apt["poly"], area_calc=apt["poly"].area / (1000000.0 if config.units == "mm" else 1.0),
-            net_area=round(sum_net, 2), balcony_area=round(sum_balcony, 2), total_area=round(sum_net + sum_balcony, 2),
-            areas_df=pd.DataFrame(rows).drop_duplicates(), all_room_labels=labels_to_draw
+            index=0, 
+            name=real_name, 
+            polygon=apt["poly"], 
+            area_calc=apt["poly"].area / (1000000.0 if config.units == "mm" else 1.0),
+            net_area=round(sum_net, 2), 
+            balcony_area=round(sum_balcony, 2), 
+            total_area=round(sum_net + sum_balcony, 2),
+            areas_df=pd.DataFrame(rows).drop_duplicates(), 
+            all_room_labels=labels_to_draw
         ))
     return final_results
