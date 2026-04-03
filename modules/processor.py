@@ -2,12 +2,11 @@ import ezdxf
 import pandas as pd
 import re
 import io
+import plotly.graph_objects as go
+import numpy as np
 from typing import List, Any
 from dataclasses import dataclass
 from shapely.geometry import Polygon, Point, LineString
-import plotly.graph_objects as go
-
-# --- STRUCTURI DE DATE ---
 
 @dataclass
 class RoomLabel:
@@ -26,15 +25,13 @@ class ApartmentResult:
     total_area: float    
     areas_df: pd.DataFrame
     all_room_labels: List[RoomLabel]
-    internal_geometries: List[Any] # Stocăm liniile interioare (pereți, uși etc.)
+    geometries: List[Any]
 
 class ProcessorConfig:
     def __init__(self, reference_layer: str, units: str = "m"):
         self.reference_layer = reference_layer
         self.units = units
         self.scale = 1000.0 if units == "mm" else 1.0
-
-# --- FUNCȚII AUXILIARE ---
 
 def _entity_text_value(e) -> str:
     if e.dxftype() == "MTEXT":
@@ -50,43 +47,13 @@ def _entity_text_value(e) -> str:
         clean = clean.replace(code, char)
     return clean.strip()
 
-def draw_all_layers_interactive(dxf_data: bytes):
+def draw_all_layers_interactive(dxf_data: bytes, highlight_layer: str = None):
     stream = io.TextIOWrapper(io.BytesIO(dxf_data), encoding="utf-8", errors="replace")
     doc = ezdxf.read(stream)
     msp = doc.modelspace()
     fig = go.Figure()
     
-    for p in msp.query('LWPOLYLINE'):
-        try:
-            pts = [(v[0], v[1]) for v in p.get_points()]
-            if pts:
-                x, y = zip(*pts); 
-                if p.is_closed: x, y = x + (x[0],), y + (y[0],)
-                fig.add_trace(go.Scatter(x=x, y=y, mode='lines', line=dict(color='#A0A0A0', width=0.8), hoverinfo='none', showlegend=False))
-        except: continue
-    return fig
-
-# --- PROCESARE GEOMETRIE ȘI RELEVEE ---
-
-def process_dxf_bytes(dxf_data: bytes, config: ProcessorConfig) -> List[ApartmentResult]:
-    stream = io.TextIOWrapper(io.BytesIO(dxf_data), encoding="utf-8", errors="replace")
-    doc = ezdxf.read(stream)
-    msp = doc.modelspace()
-    
-    # 1. Identificăm Contururile Apartamentelor
-    apts_raw = []
-    for p in msp.query(f'LWPOLYLINE[layer=="{config.reference_layer}"]'):
-        if p.is_closed and len(p) >= 3:
-            pts = [(v[0], v[1]) for v in p.get_points()]
-            poly = Polygon(pts)
-            if poly.is_valid and poly.area > 0.1:
-                apts_raw.append({"poly": poly, "temp_name": f"Unitate_{len(apts_raw)+1}"})
-    
-    if not apts_raw: return []
-
-    # 2. Colectăm Geometria și Textele din tot planul (explodând blocurile)
-    all_geoms = []
-    all_labels = []
+    all_x, all_y = [], []
     
     for e in msp:
         items = [e]
@@ -94,75 +61,109 @@ def process_dxf_bytes(dxf_data: bytes, config: ProcessorConfig) -> List[Apartmen
             try: items.extend(list(e.virtual_entities()))
             except: pass
             
+        for item in items:
+            pts = []
+            lname = item.dxf.layer
+            # Stabilim culoarea: Rosu daca e layerul selectat, altfel gri
+            is_highlight = (highlight_layer and lname == highlight_layer)
+            color = "#FF0000" if is_highlight else "#D3D3D3"
+            width = 1.5 if is_highlight else 0.6
+            opacity = 1.0 if is_highlight else 0.4
+
+            if item.dxftype() == "LWPOLYLINE":
+                pts = [(v[0], v[1]) for v in item.get_points()]
+                if item.is_closed and pts: pts.append(pts[0])
+            elif item.dxftype() == "LINE":
+                pts = [(item.dxf.start.x, item.dxf.start.y), (item.dxf.end.x, item.dxf.end.y)]
+            elif item.dxftype() in ("ARC", "CIRCLE"):
+                center, radius = item.dxf.center, item.dxf.radius
+                angles = np.linspace(np.radians(item.dxf.start_angle), np.radians(item.dxf.end_angle), 30) if item.dxftype() == "ARC" else np.linspace(0, 2*np.pi, 50)
+                pts = [(center.x + radius * np.cos(a), center.y + radius * np.sin(a)) for a in angles]
+
+            if pts:
+                x, y = zip(*pts)
+                all_x.extend(x); all_y.extend(y)
+                fig.add_trace(go.Scatter(x=x, y=y, mode='lines', 
+                                         line=dict(color=color, width=width), 
+                                         opacity=opacity, hoverinfo='text', text=f"Layer: {lname}", showlegend=False))
+
+    if all_x and all_y:
+        x_min, x_max, y_min, y_max = min(all_x), max(all_x), min(all_y), max(all_y)
+        dx, dy = (x_max - x_min)*0.05, (y_max - y_min)*0.05
+        fig.update_xaxes(range=[x_min-dx, x_max+dx], visible=False)
+        fig.update_yaxes(range=[y_min-dy, y_max+dy], visible=False, scaleanchor="x", scaleratio=1)
+    
+    fig.update_layout(plot_bgcolor="white", margin=dict(l=0, r=0, t=0, b=0), dragmode='pan')
+    return fig
+
+def process_dxf_bytes(dxf_data: bytes, config: ProcessorConfig) -> List[ApartmentResult]:
+    stream = io.TextIOWrapper(io.BytesIO(dxf_data), encoding="utf-8", errors="replace")
+    doc = ezdxf.read(stream)
+    msp = doc.modelspace()
+    
+    apts_raw = []
+    for p in msp.query(f'LWPOLYLINE[layer=="{config.reference_layer}"]'):
+        if p.is_closed and len(p) >= 3:
+            poly = Polygon([(v[0], v[1]) for v in p.get_points()])
+            if poly.is_valid and poly.area > 0.1:
+                apts_raw.append({"poly": poly, "temp_name": f"Unitate_{len(apts_raw)+1}"})
+    
+    if not apts_raw: return []
+
+    raw_geoms, raw_labels = [], []
+    for e in msp:
+        items = [e]
+        if e.dxftype() == "INSERT":
+            try: items.extend(list(e.virtual_entities()))
+            except: pass
         for it in items:
-            # Colectăm linii/polilinii pentru pereți
-            if it.dxftype() in ("LWPOLYLINE", "LINE"):
+            if it.dxftype() in ("LWPOLYLINE", "LINE", "ARC", "CIRCLE"):
                 try:
-                    if it.dxftype() == "LWPOLYLINE":
-                        pts = [(v[0], v[1]) for v in it.get_points()]
-                    else:
-                        pts = [(it.dxf.start.x, it.dxf.start.y), (it.dxf.end.x, it.dxf.end.y)]
-                    if len(pts) >= 2:
-                        all_geoms.append({"type": "line", "coords": pts, "layer": it.dxf.layer})
+                    if it.dxftype() == "LWPOLYLINE": pts = [(v[0], v[1]) for v in it.get_points()]
+                    elif it.dxftype() == "LINE": pts = [(it.dxf.start.x, it.dxf.start.y), (it.dxf.end.x, it.dxf.end.y)]
+                    else: continue
+                    raw_geoms.append(LineString(pts))
                 except: continue
-            
-            # Colectăm texte
-            if it.dxftype() in ("TEXT", "MTEXT", "ATTRIB"):
+            if it.dxftype() in ("TEXT", "MTEXT", "ATTRIB", "DIMENSION"):
                 val = _entity_text_value(it)
                 if len(val) > 1:
-                    all_labels.append({"val": val, "pt": Point(it.dxf.insert.x, it.dxf.insert.y)})
+                    pos = it.dxf.defpoint if it.dxftype() == "DIMENSION" else it.dxf.insert
+                    raw_labels.append({"val": val, "pt": Point(pos.x, pos.y)})
 
-    # 3. Alocăm geometria și textele fiecărui contur (Spatially)
     final_results = []
-    blacklist = {"GRESIE", "PARCHET", "ANTID", "LIMITA", "GOL", "PLACA"}
     area_pat = re.compile(r"(\d+[.,]\d+)")
-
     for apt in apts_raw:
-        internal_lines = []
-        labels_to_draw = []
+        apt_poly = apt["poly"]; internal_lines = []; labels_to_draw = []
         rows, real_name, current_room = [], apt["temp_name"], "Încăpere"
+        
+        for g in raw_geoms:
+            if apt_poly.intersects(g):
+                inter = g.intersection(apt_poly)
+                if not inter.is_empty:
+                    if inter.geom_type == 'LineString': internal_lines.append(list(inter.coords))
+                    elif inter.geom_type == 'MultiLineString':
+                        for seg in inter.geoms: internal_lines.append(list(seg.coords))
 
-        # Tăiem/Filtrăm liniile care sunt în interiorul apartamentului
-        for g in all_geoms:
-            ls = LineString(g["coords"])
-            if apt["poly"].intersects(ls):
-                # Putem chiar tăia linia exact pe contur pentru curățenie perfectă
-                intersection = ls.intersection(apt["poly"])
-                if not intersection.is_empty:
-                    if intersection.geom_type == 'LineString':
-                        internal_lines.append(list(intersection.coords))
-                    elif intersection.geom_type == 'MultiLineString':
-                        for line in intersection.geoms:
-                            internal_lines.append(list(line.coords))
-
-        # Filtrăm textele
-        for lbl in all_labels:
-            if apt["poly"].contains(lbl["pt"]):
+        for lbl in raw_labels:
+            if apt_poly.buffer(0.1).contains(lbl["pt"]):
                 txt = lbl["val"]
-                if any(w in txt.upper() for w in blacklist): continue
-                
-                # Identificare Nume Apartament
                 if "AP." in txt.upper():
                     real_name = txt.split("S=")[0].strip()
                     labels_to_draw.append(RoomLabel(txt, lbl["pt"], False))
                 else:
                     match = area_pat.search(txt)
                     if match:
-                        val = float(match.group(1).replace(",", "."))
-                        rows.append({"Nr. Apartament": real_name, "Denumire": current_room, "Suprafață (mp)": val})
+                        rows.append({"Nr.": real_name, "D": current_room, "S": float(match.group(1).replace(",", "."))})
                         labels_to_draw.append(RoomLabel(txt, lbl["pt"], True))
                         current_room = "Încăpere"
-                    else:
-                        if not any(c.isdigit() for c in txt):
-                            current_room = txt
-                            labels_to_draw.append(RoomLabel(txt, lbl["pt"], False))
+                    elif not any(c.isdigit() for c in txt):
+                        current_room = txt
+                        labels_to_draw.append(RoomLabel(txt, lbl["pt"], False))
 
         final_results.append(ApartmentResult(
-            index=0, name=real_name, polygon=apt["poly"], 
-            area_calc=apt["poly"].area / (config.scale**2),
-            net_area=0.0, balcony_area=0.0, total_area=0.0,
-            areas_df=pd.DataFrame(rows).drop_duplicates(), 
-            all_room_labels=labels_to_draw,
-            internal_geometries=internal_lines
+            index=0, name=real_name, polygon=apt_poly, area_calc=apt_poly.area / (config.scale**2),
+            net_area=0, balcony_area=0, total_area=0,
+            areas_df=pd.DataFrame(rows).drop_duplicates(), all_room_labels=labels_to_draw,
+            geometries=internal_lines
         ))
     return final_results

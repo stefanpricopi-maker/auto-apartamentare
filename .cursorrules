@@ -1,0 +1,33 @@
+# Reguli de Dezvoltare - AutoApartamentare Pro
+
+## 1. Stil de Cod și Structură Python
+- Folosește întotdeauna **Type Hints** pentru toate funcțiile (ex: `def func(p: Point) -> float:`).
+- Respectă **PEP 8** (snake_case pentru funcții/variabile, PascalCase pentru clase).
+- Menține logica matematică în `modules/processor.py` și interfața în `app.py`.
+- Adaugă docstrings scurte (stil Google) pentru funcțiile complexe de geometrie.
+
+
+
+## 2. Geometrie și DXF (ezdxf & shapely)
+- Când procesezi entități DXF, folosește întotdeauna `virtual_entities()` pentru `INSERT` (blocuri) pentru a nu pierde uși/geamuri.
+- Toate poligoanele create cu Shapely trebuie verificate cu `.is_valid`. Dacă nu sunt valide, folosește `.buffer(0)`.
+- Conversia unităților (Metri/Milimetri) trebuie să fie centralizată în `ProcessorConfig`.
+- Folosește `io.TextIOWrapper` cu `errors="replace"` la citirea fișierelor DXF pentru a evita crash-urile de encoding (diacritice).
+
+
+
+## 3. Interfață Streamlit (UI/UX)
+- NU folosi culori forțate (hardcoded) în CSS care pot bloca vizibilitatea în Dark Mode.
+- Folosește `st.cache_data` pentru funcția de citire a DXF-ului pentru a evita reîncărcarea inutilă la fiecare interacțiune.
+- Orice procesare lungă trebuie să ruleze în interiorul unui `with st.spinner()`.
+- Menține textele UI simple (fără emoji-uri în elementele critice) pentru a nu rupe testele E2E.
+
+## 4. Reguli de Testare (Pytest & Playwright)
+- Orice funcție nouă în `processor.py` trebuie să aibă un unit test corespunzător în `tests/`.
+- Testele Playwright trebuie să folosească selectori de tip `data-testid` sau `get_by_text(exact=False)`.
+- Înainte de a sugera finalizarea unui feature, rulează sau verifică compatibilitatea cu testele existente.
+- NU șterge testele de regresie (cele pentru pereți comuni sau decupare arce).
+
+## 5. Error Handling
+- Nu lăsa aplicația să dea "Crash" (traceback galben în UI). Folosește `try-except` și afișează erori prietenoase cu `st.error()` sau `st.warning()`.
+- Dacă un layer selectat este gol, afișează un mesaj informativ, nu returna o listă goală tăcută.

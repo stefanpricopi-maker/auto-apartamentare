@@ -4,62 +4,84 @@ import io
 import matplotlib.pyplot as plt
 from modules.processor import ProcessorConfig, process_dxf_bytes, draw_all_layers_interactive
 
-st.set_page_config(page_title="AutoApartamentare Pro", layout="centered")
+# 1. CONFIGURARE PAGINA
+st.set_page_config(
+    page_title="AutoApartamentare Pro", 
+    layout="wide"
+)
 
-st.title("🏙️ Relevee Apartamente - Decupare Automată")
+# Design CSS simplificat
+st.markdown("""
+    <style>
+    .stButton>button { 
+        width: 100%; 
+        border-radius: 8px; 
+        height: 3.5em; 
+        background-color: #f63366; 
+        color: white; 
+        font-weight: bold; 
+        border: none; 
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-uploaded = st.file_uploader("Încarcă DXF", type=["dxf"])
+st.title("AutoApartamentare - Versiunea Profesionala")
+st.caption("Planuri Relevee Curatate Automat pentru Cadastru.")
 
+# 2. BARA LATERALA
+with st.sidebar:
+    st.header("Incarcare Fisier")
+    uploaded = st.file_uploader("Incarca DXF", type=["dxf"])
+    
+    st.divider()
+    st.header("Configurare")
+    reference_layer = st.text_input("Nume Layer Contur:", value="Contur apartament")
+    
+    unit_type = st.radio("Unitati desen AutoCAD", ["Metri", "Milimetri"], horizontal=True, index=1)
+    unit_key = "m" if "Metri" in unit_type else "mm"
+    
+    st.write("---")
+    do_process = st.button("GENEREAZA RELEVEE COMPLET")
+
+# 3. ZONA PRINCIPALA
 if uploaded:
     raw_bytes = uploaded.getvalue()
+    st.subheader("Previzualizare Plan General")
     
-    col_config, col_prev = st.columns([1, 2])
-    
-    with col_config:
-        st.subheader("⚙️ Setări")
-        # Identificare Layere (Simplificată pentru viteză)
-        selected_layer = st.text_input("Nume Layer Contur (ex: Contur apartament)", value="Contur apartament")
-        unit_key = "m" if st.checkbox("Unități în Metri", value=True) else "mm"
-        process_btn = st.button("🚀 GENEREAZĂ RELEVEE")
+    fig_interact = draw_all_layers_interactive(raw_bytes)
+    st.plotly_chart(fig_interact, use_container_width=True)
 
-    with col_prev:
-        st.plotly_chart(draw_all_layers_interactive(raw_bytes), use_container_width=True)
-
-    if process_btn:
-        results = process_dxf_bytes(raw_bytes, ProcessorConfig(selected_layer, unit_key))
+    # 4. PROCESARE
+    if do_process:
+        with st.spinner("Procesare..."):
+            cfg = ProcessorConfig(reference_layer=reference_layer, units=unit_key)
+            results = process_dxf_bytes(raw_bytes, cfg)
         
         if results:
-            for res in results:
-                st.divider()
-                st.subheader(f"🏠 Releveu: {res.name}")
-                
-                col_data, col_img = st.columns([1, 2])
-                
-                with col_data:
-                    st.write("**Suprafețe identificate:**")
-                    st.dataframe(res.areas_df, hide_index=True)
-                
-                with col_img:
-                    # Desenăm RELEVEUL DECAPAT
-                    fig, ax = plt.subplots(figsize=(8, 8))
-                    
-                    # 1. Desenăm toate liniile interioare (pereții din interiorul apartamentului)
-                    for line_coords in res.internal_geometries:
-                        x, y = zip(*line_coords)
-                        ax.plot(x, y, color="#444444", linewidth=0.7)
-                    
-                    # 2. Desenăm conturul principal (mai gros)
-                    cx, cy = res.polygon.exterior.xy
-                    ax.plot(cx, cy, color="black", linewidth=1.5)
-                    
-                    # 3. Punem textele (camere, suprafețe)
-                    for lbl in res.all_room_labels:
-                        ax.text(lbl.point.x, lbl.point.y, lbl.text, 
-                                fontsize=7, ha='center', va='center',
-                                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=0.1))
-                    
-                    ax.set_aspect('equal')
-                    ax.axis('off')
-                    st.pyplot(fig)
-        else:
-            st.error("Nu am găsit poligoane pe layer-ul specificat!")
+            st.divider()
+            st.subheader("Centralizator Suprafete")
+            all_dfs = [r.areas_df for r in results if not r.areas_df.empty]
+            if all_dfs:
+                final_df = pd.concat(all_dfs, ignore_index=True)
+                st.dataframe(final_df, use_container_width=True, hide_index=True)
+            
+            st.divider()
+            st.subheader("Rezultat Final: Relevee Curatate")
+            
+            fig_final, ax = plt.subplots(figsize=(12, 12))
+            for r in results:
+                for line_coords in r.geometries:
+                    x, y = zip(*line_coords)
+                    ax.plot(x, y, linewidth=0.7, color="#555555", alpha=0.9)
+                cx, cy = r.polygon.exterior.xy
+                ax.plot(cx, cy, linewidth=1.5, color="black")
+                for lbl in r.all_room_labels:
+                    ax.text(lbl.point.x, lbl.point.y, lbl.text, 
+                            ha='center', va='center', fontsize=8, color="black", 
+                            bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=0.1))
+            
+            ax.set_aspect('equal')
+            ax.axis('off')
+            st.pyplot(fig_final)
+else:
+    st.info("Incarca un fisier DXF pentru a incepe.")
